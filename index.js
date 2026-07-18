@@ -28,8 +28,30 @@ function toMs(s) {
 
 const timers = new Map();   // "uid|key" -> timeout handle
 const fireAt = loadStore(); // "uid|key" -> { at, ch }  (epoch ms, channel id)
-const lastTu = new Map();   // channelId -> { uid, at }  who ran $tu last, to attribute Mudae's reply
+const lastTu = new Map();   // channelId -> [{ uid, names, at }] recent $tu requesters, oldest first
 const pending = new Map();  // uid -> { keys: Set, ch, t } batch window per user
+
+const TU_WINDOW = 60_000; // how long a $tu waits for Mudae's reply
+
+// Remember a $tu requester for this channel (queue, so several users can overlap).
+export function rememberTu(map, chId, entry) {
+  const arr = map.get(chId) ?? [];
+  arr.push({ at: Date.now(), ...entry });
+  map.set(chId, arr.slice(-10)); // ponytail: cap 10, nobody queues more $tu than that in 60s
+}
+
+// Pick the requester for a Mudae reply: match the display name Mudae leads with
+// ("lastlimited, you can claim..."), else oldest pending. Consumed once.
+export function takeRequester(map, chId, text) {
+  const now = Date.now();
+  const arr = (map.get(chId) ?? []).filter(e => now - e.at < TU_WINDOW);
+  const lower = text.toLowerCase();
+  let i = arr.findIndex(e => e.names.some(n => lower.startsWith(n)));
+  if (i === -1 && arr.length) i = 0; // no name match -> oldest waiting
+  const who = i === -1 ? undefined : arr.splice(i, 1)[0];
+  map.set(chId, arr);
+  return who;
+}
 
 function loadStore() {
   try { return new Map(Object.entries(JSON.parse(fs.readFileSync(STORE, 'utf8')))); }
@@ -81,18 +103,21 @@ const client = new Client({
 });
 
 client.on('messageCreate', (msg) => {
-  // Any user typing $tu (or $tuarrange etc.) -> remember them for this channel.
+  // Any user typing $tu (or $tuarrange etc.) -> queue them for this channel.
   if (!msg.author.bot && /^\$tu\b/i.test(msg.content ?? '')) {
-    lastTu.set(msg.channelId, { uid: msg.author.id, at: Date.now() });
+    const names = [msg.member?.displayName, msg.author.globalName, msg.author.username]
+      .filter(Boolean).map(n => n.toLowerCase());
+    rememberTu(lastTu, msg.channelId, { uid: msg.author.id, names });
+    console.log(`[$tu] from ${msg.author.id} (${names[0]}) in ${msg.channelId}`);
     return;
   }
   if (msg.author.id !== MUDAE_ID) return;
   const text = msg.content || msg.embeds.map(e => `${e.title ?? ''} ${e.description ?? ''}`).join(' ');
   if (!/reset|vote again|react to kakera|\$dk/i.test(text)) return; // not a $tu reply
 
-  // Attribute the reply to whoever ran $tu here in the last 30s.
-  const who = lastTu.get(msg.channelId);
-  if (!who || Date.now() - who.at > 30_000) return;
+  // Attribute the reply: name Mudae leads with, else oldest waiting requester.
+  const who = takeRequester(lastTu, msg.channelId, text);
+  if (!who) { console.log(`[mudae reply] no pending $tu requester, ignored: "${text.slice(0, 40)}"`); return; }
   console.log(`[mudae reply] for ${who.uid}: "${text.slice(0, 40)}"`);
 
   for (const { key, re } of WATCH) {
@@ -109,8 +134,10 @@ client.once('clientReady', () => {
   }
 });
 
-client.login(process.env.TOKEN).catch(err => { console.error('login failed:', err.message); process.exit(1); });
+if (!process.env.TEST) { // TEST=1: import for unit tests without connecting
+  client.login(process.env.TOKEN).catch(err => { console.error('login failed:', err.message); process.exit(1); });
 
-// Keep-alive HTTP endpoint so Render treats this as a Web Service (free tier).
-// An external pinger hitting this every ~10 min stops the service sleeping.
-http.createServer((_, res) => res.end('ok')).listen(process.env.PORT || 3000);
+  // Keep-alive HTTP endpoint so Render treats this as a Web Service (free tier).
+  // An external pinger hitting this every ~10 min stops the service sleeping.
+  http.createServer((_, res) => res.end('ok')).listen(process.env.PORT || 3000);
+}
