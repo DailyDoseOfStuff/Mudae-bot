@@ -155,10 +155,13 @@ client.on('messageCreate', (msg) => {
   if (!who) { console.log(`[mudae reply] no pending $tu requester, ignored: "${text.slice(0, 40)}"`); return; }
   console.log(`[mudae reply] for ${who.uid}: "${text.slice(0, 40)}"`);
 
+  let hits = 0;
   for (const { key, re } of WATCH) {
     const m = re.exec(text);
-    if (m) arm(who.uid, key, Date.now() + toMs(m[1]), msg.channelId, who.names[0]);
+    if (m) { arm(who.uid, key, Date.now() + toMs(m[1]), msg.channelId, who.names[0]); hits++; }
   }
+  // ponytail: temporary — dump full reply when no regex matched, so we can fix the patterns.
+  if (!hits) console.log(`[mudae reply] NO MATCH, full text:\n${text}`);
 });
 
 client.once('clientReady', () => {
