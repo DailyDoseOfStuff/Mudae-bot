@@ -134,49 +134,88 @@ client.once('clientReady', () => {
   }
 });
 
-// Dashboard: live table of every armed timer. Data embedded as JSON, rendered
-// client-side with textContent (names come from Discord — never inject as HTML).
-export function dashboard() {
+// Timer rows as JSON — feeds both the initial page render and /api/timers polling.
+export function timersJson() {
   const rows = [...fireAt.entries()].map(([id, v]) => {
     const [uid, key] = id.split('|');
     return { name: v.name || uid, key, at: Number(v.at) };
   });
+  return JSON.stringify(rows).replace(/</g, '\\u003c'); // names come from Discord — never let them close the <script>
+}
+
+// Dashboard: live table of every armed timer. Client polls /api/timers every 10s,
+// so a fresh $tu in Discord appears here within seconds. All rendering uses
+// textContent (Discord names are untrusted — never injected as HTML).
+export function dashboard() {
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Mudae timers</title>
 <style>
-body{font-family:system-ui,sans-serif;background:#1e1f22;color:#dbdee1;padding:2rem;margin:0}
-table{border-collapse:collapse;min-width:22rem}
-td,th{padding:.45rem .9rem;border-bottom:1px solid #3f4147;text-align:left}
-th{color:#949ba4;font-weight:600}
-.ready{color:#57f287;font-weight:600}
-p{color:#949ba4}
+:root{
+  --bg:#020617; --surface:#0F172A; --surface2:#1E293B; --border:#334155;
+  --fg:#F8FAFC; --muted:#94A3B8; --accent:#22C55E; --mono:ui-monospace,'Cascadia Mono',Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:var(--fg);margin:0;padding:1.5rem;min-height:100vh}
+main{max-width:40rem;margin:0 auto}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;margin-bottom:1rem;flex-wrap:wrap}
+h1{font-size:1.15rem;margin:0;letter-spacing:.04em}
+.live{display:inline-flex;align-items:center;gap:.4rem;color:var(--muted);font-size:.8rem}
+.dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--accent);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion: reduce){.dot{animation:none}}
+table{border-collapse:collapse;width:100%;background:var(--surface);border:1px solid var(--border);border-radius:.5rem;overflow:hidden}
+th,td{padding:.55rem .9rem;text-align:left;border-bottom:1px solid var(--border);font-size:.9rem}
+tr:last-child td{border-bottom:none}
+th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;background:var(--surface2)}
+td.left{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.badge{display:inline-block;background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:.1rem .6rem;font-size:.75rem;color:var(--muted)}
+tr.ready td.left{color:var(--accent);font-weight:600;text-shadow:0 0 10px rgba(34,197,94,.45)}
+tr.ready .badge{border-color:var(--accent);color:var(--accent)}
+tr{transition:background .2s ease}
+tbody tr:hover{background:var(--surface2)}
+#empty{color:var(--muted);text-align:center;padding:2rem 1rem;border:1px dashed var(--border);border-radius:.5rem;margin:0}
+#empty code{font-family:var(--mono);color:var(--fg)}
+footer{color:var(--muted);font-size:.75rem;margin-top:.9rem;text-align:center}
 </style>
-<h2>Mudae reset timers</h2>
-<table><thead><tr><th>User</th><th>Reset</th><th>Time left</th></tr></thead><tbody id="tb"></tbody></table>
-<p id="empty" hidden>No timers armed. Run $tu in Discord.</p>
+<main>
+<header><h1>Mudae reset timers</h1><span class="live"><span class="dot"></span><span id="stat">live</span></span></header>
+<table id="tbl" hidden><thead><tr><th scope="col">User</th><th scope="col">Reset</th><th scope="col" style="text-align:right">Time left</th></tr></thead><tbody id="tb"></tbody></table>
+<p id="empty" hidden>No timers armed — run <code>$tu</code> in Discord and this fills in.</p>
+<footer>refreshes every 10s</footer>
+</main>
 <script>
-const data = ${JSON.stringify(rows).replace(/</g, '\\u003c')};
+let data = ${timersJson()};
 function fmt(ms) {
   if (ms <= 0) return 'ready';
   const m = Math.ceil(ms / 60000);
-  return (m >= 60 ? Math.floor(m / 60) + 'h ' : '') + (m % 60) + ' min';
+  return (m >= 60 ? Math.floor(m / 60) + 'h ' : '') + (m % 60) + 'm';
 }
 function draw() {
   const tb = document.getElementById('tb');
   tb.innerHTML = '';
+  document.getElementById('tbl').hidden = data.length === 0;
   document.getElementById('empty').hidden = data.length > 0;
-  for (const r of data.sort((a, b) => a.at - b.at)) {
+  for (const r of data.slice().sort((a, b) => a.at - b.at)) {
+    const left = r.at - Date.now();
     const tr = tb.insertRow();
+    tr.className = left <= 0 ? 'ready' : '';
     tr.insertCell().textContent = r.name;
-    tr.insertCell().textContent = r.key;
+    const badge = document.createElement('span');
+    badge.className = 'badge'; badge.textContent = r.key;
+    tr.insertCell().appendChild(badge);
     const c = tr.insertCell();
-    c.textContent = fmt(r.at - Date.now());
-    c.className = r.at - Date.now() <= 0 ? 'ready' : '';
+    c.className = 'left'; c.textContent = fmt(left);
   }
 }
+async function poll() {
+  try {
+    data = await (await fetch('/api/timers')).json();
+    document.getElementById('stat').textContent = 'live';
+  } catch { document.getElementById('stat').textContent = 'reconnecting…'; }
+  draw();
+}
 draw();
-setInterval(draw, 15000);                       // recount locally
-setTimeout(() => location.reload(), 120000);    // refetch fresh data
+setInterval(poll, 10000);
 </script>`;
 }
 
@@ -185,8 +224,13 @@ if (!process.env.TEST) { // TEST=1: import for unit tests without connecting
 
   // Doubles as the keep-alive endpoint for Render free tier: the external
   // pinger hitting this every ~10 min stops the service sleeping.
-  http.createServer((_, res) => {
-    res.setHeader('content-type', 'text/html; charset=utf-8');
-    res.end(dashboard());
+  http.createServer((req, res) => {
+    if (req.url === '/api/timers') {
+      res.setHeader('content-type', 'application/json');
+      res.end(timersJson());
+    } else {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.end(dashboard());
+    }
   }).listen(process.env.PORT || 3000);
 }
