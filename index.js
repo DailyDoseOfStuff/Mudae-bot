@@ -10,6 +10,12 @@ const MUDAE_ID = process.env.MUDAE_ID || '432610292342587392'; // Mudae's user i
 const STORE = './timers.json'; // persisted fire times, survives restarts
 const GIST_ID = process.env.GIST_ID;   // id of a secret gist containing timers.json
 const GH_TOKEN = process.env.GH_TOKEN; // GitHub token with gist scope
+// GitHub's API rejects requests with no User-Agent (403); Node's fetch sends none.
+const GH_HEADERS = {
+  authorization: `Bearer ${GH_TOKEN}`,
+  accept: 'application/vnd.github+json',
+  'user-agent': 'mudae-reset-pinger',
+};
 
 // Which lines to watch. key = label, re = regex matching that $tu line.
 const WATCH = [
@@ -60,11 +66,12 @@ export function takeRequester(map, chId, text) {
 async function loadStore() {
   if (GIST_ID && GH_TOKEN) {
     try {
-      const r = await fetch(`https://api.github.com/gists/${GIST_ID}`,
-        { headers: { authorization: `Bearer ${GH_TOKEN}` } });
+      const r = await fetch(`https://api.github.com/gists/${GIST_ID}`, { headers: GH_HEADERS });
       if (!r.ok) throw new Error(`gist GET ${r.status}`);
       const g = await r.json();
-      return new Map(Object.entries(JSON.parse(g.files['timers.json'].content)));
+      const map = new Map(Object.entries(JSON.parse(g.files['timers.json'].content)));
+      console.log(`gist loaded, ${map.size} timers`);
+      return map;
     } catch (err) { console.error('gist load failed, starting empty:', err.message); return new Map(); }
   }
   try { return new Map(Object.entries(JSON.parse(fs.readFileSync(STORE, 'utf8')))); }
@@ -82,9 +89,9 @@ function saveStore() {
   gistT = setTimeout(() => {
     fetch(`https://api.github.com/gists/${GIST_ID}`, {
       method: 'PATCH',
-      headers: { authorization: `Bearer ${GH_TOKEN}`, 'content-type': 'application/json' },
+      headers: { ...GH_HEADERS, 'content-type': 'application/json' },
       body: JSON.stringify({ files: { 'timers.json': { content: json } } }),
-    }).then(r => { if (!r.ok) console.error(`gist save failed: ${r.status}`); })
+    }).then(r => { if (r.ok) console.log('gist saved'); else console.error(`gist save failed: ${r.status}`); })
       .catch(err => console.error('gist save failed:', err.message));
   }, 5_000);
 }
