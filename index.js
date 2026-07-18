@@ -8,6 +8,8 @@ import { Client, GatewayIntentBits, Partials } from 'discord.js';
 
 const MUDAE_ID = process.env.MUDAE_ID || '432610292342587392'; // Mudae's user id
 const STORE = './timers.json'; // persisted fire times, survives restarts
+const GIST_ID = process.env.GIST_ID;   // id of a secret gist containing timers.json
+const GH_TOKEN = process.env.GH_TOKEN; // GitHub token with gist scope
 
 // Which lines to watch. key = label, re = regex matching that $tu line.
 const WATCH = [
@@ -27,7 +29,7 @@ function toMs(s) {
 }
 
 const timers = new Map();   // "uid|key" -> timeout handle
-export const fireAt = loadStore(); // "uid|key" -> { at, ch, name }  (epoch ms, channel id, display name)
+export const fireAt = await loadStore(); // "uid|key" -> { at, ch, name }  (epoch ms, channel id, display name)
 const lastTu = new Map();   // channelId -> [{ uid, names, at }] recent $tu requesters, oldest first
 const pending = new Map();  // uid -> { keys: Set, ch, t } batch window per user
 
@@ -53,12 +55,38 @@ export function takeRequester(map, chId, text) {
   return who;
 }
 
-function loadStore() {
+// Render's disk is wiped on every deploy, so the real store is a secret GitHub
+// gist (free, survives deploys). Local file is used when gist env vars are absent.
+async function loadStore() {
+  if (GIST_ID && GH_TOKEN) {
+    try {
+      const r = await fetch(`https://api.github.com/gists/${GIST_ID}`,
+        { headers: { authorization: `Bearer ${GH_TOKEN}` } });
+      if (!r.ok) throw new Error(`gist GET ${r.status}`);
+      const g = await r.json();
+      return new Map(Object.entries(JSON.parse(g.files['timers.json'].content)));
+    } catch (err) { console.error('gist load failed, starting empty:', err.message); return new Map(); }
+  }
   try { return new Map(Object.entries(JSON.parse(fs.readFileSync(STORE, 'utf8')))); }
   catch { return new Map(); }
 }
+
+let gistT;
 function saveStore() {
-  fs.writeFileSync(STORE, JSON.stringify(Object.fromEntries(fireAt)));
+  const json = JSON.stringify(Object.fromEntries(fireAt));
+  try { fs.writeFileSync(STORE, json); } catch {} // best-effort local cache
+  if (!GIST_ID || !GH_TOKEN) return;
+  // ponytail: 5s debounce — arm() saves 6x per $tu, gist needs one write. A deploy
+  // landing inside the 5s window can lose that batch; fine for a few users.
+  clearTimeout(gistT);
+  gistT = setTimeout(() => {
+    fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      method: 'PATCH',
+      headers: { authorization: `Bearer ${GH_TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ files: { 'timers.json': { content: json } } }),
+    }).then(r => { if (!r.ok) console.error(`gist save failed: ${r.status}`); })
+      .catch(err => console.error('gist save failed:', err.message));
+  }, 5_000);
 }
 
 // Collect keys firing close together, send ONE message per user after a 3s window.
