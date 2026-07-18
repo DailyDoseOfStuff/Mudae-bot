@@ -27,7 +27,7 @@ function toMs(s) {
 }
 
 const timers = new Map();   // "uid|key" -> timeout handle
-const fireAt = loadStore(); // "uid|key" -> { at, ch }  (epoch ms, channel id)
+export const fireAt = loadStore(); // "uid|key" -> { at, ch, name }  (epoch ms, channel id, display name)
 const lastTu = new Map();   // channelId -> [{ uid, names, at }] recent $tu requesters, oldest first
 const pending = new Map();  // uid -> { keys: Set, ch, t } batch window per user
 
@@ -87,12 +87,12 @@ async function flushPing(uid) {
 }
 
 // Arm a timer for user `uid`, reset `key`, absolute time `at`, ping channel `ch`.
-function arm(uid, key, at, ch) {
+function arm(uid, key, at, ch, name) {
   const id = `${uid}|${key}`;
   clearTimeout(timers.get(id));
   // TEST_SECONDS: fire every timer after N seconds instead of the real delay (test only).
   const delay = process.env.TEST_SECONDS ? Number(process.env.TEST_SECONDS) * 1000 : at - Date.now();
-  fireAt.set(id, { at, ch }); saveStore();
+  fireAt.set(id, { at, ch, name }); saveStore();
   timers.set(id, setTimeout(() => queuePing(uid, ch, key), Math.max(delay, 0)));
   console.log(`scheduled ${key} for ${uid} in ${Math.round(Math.max(delay, 0) / 60000)} min`);
 }
@@ -122,22 +122,71 @@ client.on('messageCreate', (msg) => {
 
   for (const { key, re } of WATCH) {
     const m = re.exec(text);
-    if (m) arm(who.uid, key, Date.now() + toMs(m[1]), msg.channelId);
+    if (m) arm(who.uid, key, Date.now() + toMs(m[1]), msg.channelId, who.names[0]);
   }
 });
 
 client.once('clientReady', () => {
   console.log(`up as ${client.user.tag}. Run $tu in the channel.`);
-  for (const [id, { at, ch }] of fireAt) { // reschedule survivors after restart
+  for (const [id, { at, ch, name }] of fireAt) { // reschedule survivors after restart
     const [uid, key] = id.split('|');
-    arm(uid, key, Number(at), ch);
+    arm(uid, key, Number(at), ch, name);
   }
 });
+
+// Dashboard: live table of every armed timer. Data embedded as JSON, rendered
+// client-side with textContent (names come from Discord — never inject as HTML).
+export function dashboard() {
+  const rows = [...fireAt.entries()].map(([id, v]) => {
+    const [uid, key] = id.split('|');
+    return { name: v.name || uid, key, at: Number(v.at) };
+  });
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mudae timers</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#1e1f22;color:#dbdee1;padding:2rem;margin:0}
+table{border-collapse:collapse;min-width:22rem}
+td,th{padding:.45rem .9rem;border-bottom:1px solid #3f4147;text-align:left}
+th{color:#949ba4;font-weight:600}
+.ready{color:#57f287;font-weight:600}
+p{color:#949ba4}
+</style>
+<h2>Mudae reset timers</h2>
+<table><thead><tr><th>User</th><th>Reset</th><th>Time left</th></tr></thead><tbody id="tb"></tbody></table>
+<p id="empty" hidden>No timers armed. Run $tu in Discord.</p>
+<script>
+const data = ${JSON.stringify(rows).replace(/</g, '\\u003c')};
+function fmt(ms) {
+  if (ms <= 0) return 'ready';
+  const m = Math.ceil(ms / 60000);
+  return (m >= 60 ? Math.floor(m / 60) + 'h ' : '') + (m % 60) + ' min';
+}
+function draw() {
+  const tb = document.getElementById('tb');
+  tb.innerHTML = '';
+  document.getElementById('empty').hidden = data.length > 0;
+  for (const r of data.sort((a, b) => a.at - b.at)) {
+    const tr = tb.insertRow();
+    tr.insertCell().textContent = r.name;
+    tr.insertCell().textContent = r.key;
+    const c = tr.insertCell();
+    c.textContent = fmt(r.at - Date.now());
+    c.className = r.at - Date.now() <= 0 ? 'ready' : '';
+  }
+}
+draw();
+setInterval(draw, 15000);                       // recount locally
+setTimeout(() => location.reload(), 120000);    // refetch fresh data
+</script>`;
+}
 
 if (!process.env.TEST) { // TEST=1: import for unit tests without connecting
   client.login(process.env.TOKEN).catch(err => { console.error('login failed:', err.message); process.exit(1); });
 
-  // Keep-alive HTTP endpoint so Render treats this as a Web Service (free tier).
-  // An external pinger hitting this every ~10 min stops the service sleeping.
-  http.createServer((_, res) => res.end('ok')).listen(process.env.PORT || 3000);
+  // Doubles as the keep-alive endpoint for Render free tier: the external
+  // pinger hitting this every ~10 min stops the service sleeping.
+  http.createServer((_, res) => {
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.end(dashboard());
+  }).listen(process.env.PORT || 3000);
 }
