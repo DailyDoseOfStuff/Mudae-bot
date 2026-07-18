@@ -18,14 +18,29 @@ const GH_HEADERS = {
 };
 
 // Which lines to watch. key = label, re = regex matching that $tu line.
+// Patterns run on markdown-stripped text (Mudae bolds the times: "**1h 39** min").
 const WATCH = [
-  { key: 'claim',  re: /next claim reset is in ([\dhmins ]+?)\./i },
+  { key: 'claim',  re: /claim for another ([\dhmins ]+?)\./i },
   { key: 'rolls',  re: /rolls reset in ([\dhmins ]+?)\./i },
   { key: 'daily',  re: /\$daily reset in ([\dhmins ]+?)\./i },
-  { key: 'kakera', re: /react to kakera for ([\dhmins ]+?)\./i },
-  { key: 'dk',     re: /\$dk in ([\dhmins ]+?)\./i },
+  { key: 'kakera', re: /react to kakera for another ([\dhmins ]+?)\./i },
+  { key: 'dk',     re: /\$dk (?:in|ready in) ([\dhmins ]+?)\./i },
   { key: 'vote',   re: /vote again in ([\dhmins ]+?)\./i },
 ];
+
+// Strip Discord bold/italic so "**1h 39** min" reads as "1h 39 min" and the
+// name Mudae leads with ("**shdaolee**,") matches the requester.
+export const stripMd = (s) => s.replace(/[*_]/g, '');
+
+// Parse a markdown-stripped $tu reply into [{ key, ms }] for each reset on cooldown.
+export function matchResets(text) {
+  const out = [];
+  for (const { key, re } of WATCH) {
+    const m = re.exec(text);
+    if (m) out.push({ key, ms: toMs(m[1]) });
+  }
+  return out;
+}
 
 // "1h 30 min" / "30 min" -> milliseconds
 function toMs(s) {
@@ -147,21 +162,19 @@ client.on('messageCreate', (msg) => {
     return;
   }
   if (msg.author.id !== MUDAE_ID) return;
-  const text = msg.content || msg.embeds.map(e => `${e.title ?? ''} ${e.description ?? ''}`).join(' ');
-  if (!/reset|vote again|react to kakera|\$dk/i.test(text)) return; // not a $tu reply
+  const raw = msg.content || msg.embeds.map(e => `${e.title ?? ''} ${e.description ?? ''}`).join(' ');
+  if (!/reset|vote again|react to kakera|\$dk/i.test(raw)) return; // not a $tu reply
+  const text = stripMd(raw); // drop ** bold ** so patterns and name-match see plain text
 
   // Attribute the reply: name Mudae leads with, else oldest waiting requester.
   const who = takeRequester(lastTu, msg.channelId, text);
   if (!who) { console.log(`[mudae reply] no pending $tu requester, ignored: "${text.slice(0, 40)}"`); return; }
   console.log(`[mudae reply] for ${who.uid}: "${text.slice(0, 40)}"`);
 
-  let hits = 0;
-  for (const { key, re } of WATCH) {
-    const m = re.exec(text);
-    if (m) { arm(who.uid, key, Date.now() + toMs(m[1]), msg.channelId, who.names[0]); hits++; }
-  }
-  // ponytail: temporary — dump full reply when no regex matched, so we can fix the patterns.
-  if (!hits) console.log(`[mudae reply] NO MATCH, full text:\n${text}`);
+  const resets = matchResets(text);
+  for (const { key, ms } of resets) arm(who.uid, key, Date.now() + ms, msg.channelId, who.names[0]);
+  // ponytail: temporary — dump full reply when nothing matched, so cooldown wordings can be fixed.
+  if (!resets.length) console.log(`[mudae reply] NO MATCH, full text:\n${raw}`);
 });
 
 client.once('clientReady', () => {
