@@ -163,19 +163,31 @@ client.on('messageCreate', (msg) => {
   }
   if (msg.author.id !== MUDAE_ID) return;
   const raw = msg.content || msg.embeds.map(e => `${e.title ?? ''} ${e.description ?? ''}`).join(' ');
-  if (!/reset|vote again|react to kakera|\$dk/i.test(raw)) return; // not a $tu reply
+  handleMudaeReply(raw, msg.channelId, lastTu, arm);
+});
+
+// Handle one Mudae message: parse timers, attribute to a $tu requester, arm.
+// Exported (with armFn injectable) so tests exercise the real ordering.
+export function handleMudaeReply(raw, chId, tuMap, armFn) {
   const text = stripMd(raw); // drop ** bold ** so patterns and name-match see plain text
 
+  // Parse BEFORE attributing. Mudae messages like the roulette rate-limit
+  // ("...reset the timer: $vote. 16 min left.") trip the loose "reset" wording
+  // but schedule nothing; consuming the $tu requester on those would drop the
+  // real reply that follows and leave stale timers firing at the wrong times.
+  const resets = matchResets(text);
+  if (!resets.length) {
+    // ponytail: temporary — dump reply-looking-but-unmatched text so new cooldown wordings can be added.
+    if (/reset|vote again|react to kakera|\$dk/i.test(raw)) console.log(`[mudae reply] NO MATCH, full text:\n${raw}`);
+    return;
+  }
+
   // Attribute the reply: name Mudae leads with, else oldest waiting requester.
-  const who = takeRequester(lastTu, msg.channelId, text);
+  const who = takeRequester(tuMap, chId, text);
   if (!who) { console.log(`[mudae reply] no pending $tu requester, ignored: "${text.slice(0, 40)}"`); return; }
   console.log(`[mudae reply] for ${who.uid}: "${text.slice(0, 40)}"`);
-
-  const resets = matchResets(text);
-  for (const { key, ms } of resets) arm(who.uid, key, Date.now() + ms, msg.channelId, who.names[0]);
-  // ponytail: temporary — dump full reply when nothing matched, so cooldown wordings can be fixed.
-  if (!resets.length) console.log(`[mudae reply] NO MATCH, full text:\n${raw}`);
-});
+  for (const { key, ms } of resets) armFn(who.uid, key, Date.now() + ms, chId, who.names[0]);
+}
 
 client.once('clientReady', () => {
   console.log(`up as ${client.user.tag}. Run $tu in the channel.`);
@@ -202,35 +214,41 @@ export function dashboard() {
 <title>Mudae timers</title>
 <style>
 :root{
-  --bg:#020617; --surface:#0F172A; --surface2:#1E293B; --border:#334155;
-  --fg:#F8FAFC; --muted:#94A3B8; --accent:#22C55E; --mono:ui-monospace,'Cascadia Mono',Consolas,monospace;
+  --bg:#060911; --surface:#0F172A; --surface2:#1A2438; --border:#26324a;
+  --fg:#F1F5F9; --muted:#8b98ad; --accent:#34D399; --mono:ui-monospace,'Cascadia Mono',Consolas,monospace;
 }
 *{box-sizing:border-box}
-body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:var(--bg);color:var(--fg);margin:0;padding:1.5rem;min-height:100vh}
-main{max-width:40rem;margin:0 auto}
-header{display:flex;align-items:baseline;justify-content:space-between;gap:1rem;margin-bottom:1rem;flex-wrap:wrap}
-h1{font-size:1.15rem;margin:0;letter-spacing:.04em}
-.live{display:inline-flex;align-items:center;gap:.4rem;color:var(--muted);font-size:.8rem}
-.dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--accent);animation:pulse 2s ease-in-out infinite}
-@keyframes pulse{50%{opacity:.35}}
+body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;color:var(--fg);margin:0;padding:2.5rem 1.5rem;min-height:100vh;
+  background:radial-gradient(1200px 600px at 50% -10%,#141d33 0%,var(--bg) 60%)}
+main{max-width:54rem;margin:0 auto}
+.scroll{overflow-x:auto;border:1px solid var(--border);border-radius:.85rem;background:var(--surface);
+  box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 20px 40px -24px rgba(0,0,0,.8)}
+header{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin:0 .25rem 1.1rem;flex-wrap:wrap}
+h1{font-size:1.35rem;margin:0;font-weight:700;letter-spacing:-.01em}
+.live{display:inline-flex;align-items:center;gap:.45rem;color:var(--muted);font-size:.8rem;font-weight:500}
+.dot{width:.5rem;height:.5rem;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.3}}
 @media (prefers-reduced-motion: reduce){.dot{animation:none}}
-table{border-collapse:collapse;width:100%;background:var(--surface);border:1px solid var(--border);border-radius:.5rem;overflow:hidden}
-th,td{padding:.55rem .9rem;text-align:left;border-bottom:1px solid var(--border);font-size:.9rem}
-tr:last-child td{border-bottom:none}
-th{color:var(--muted);font-weight:600;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;background:var(--surface2)}
-td.left{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
-.badge{display:inline-block;background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:.1rem .6rem;font-size:.75rem;color:var(--muted)}
-tr.ready td.left{color:var(--accent);font-weight:600;text-shadow:0 0 10px rgba(34,197,94,.45)}
-tr.ready .badge{border-color:var(--accent);color:var(--accent)}
-tr{transition:background .2s ease}
+table{border-collapse:collapse;width:100%}
+th,td{padding:.7rem 1rem;font-size:.9rem;white-space:nowrap;border-bottom:1px solid var(--border)}
+tbody tr:last-child td{border-bottom:none}
+th{color:var(--muted);font-weight:600;font-size:.7rem;text-transform:uppercase;letter-spacing:.09em;
+  text-align:center;background:var(--surface2);position:sticky;top:0}
+th:first-child,td.u{text-align:left}
+td.u{font-weight:600;color:var(--fg)}
+td.t{text-align:center;font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--fg)}
+td.none{color:#3a465c}
+td.ready{color:var(--accent);font-weight:700;letter-spacing:.02em;text-shadow:0 0 12px rgba(52,211,153,.5)}
+tbody tr{transition:background .15s ease}
+tbody tr:nth-child(even){background:rgba(255,255,255,.015)}
 tbody tr:hover{background:var(--surface2)}
-#empty{color:var(--muted);text-align:center;padding:2rem 1rem;border:1px dashed var(--border);border-radius:.5rem;margin:0}
-#empty code{font-family:var(--mono);color:var(--fg)}
-footer{color:var(--muted);font-size:.75rem;margin-top:.9rem;text-align:center}
+#empty{color:var(--muted);text-align:center;padding:2.5rem 1rem;border:1px dashed var(--border);border-radius:.85rem;margin:0;font-size:.9rem}
+#empty code{font-family:var(--mono);color:var(--accent)}
+footer{color:var(--muted);font-size:.72rem;margin-top:1rem;text-align:center;letter-spacing:.03em}
 </style>
 <main>
 <header><h1>Mudae reset timers</h1><span class="live"><span class="dot"></span><span id="stat">live</span></span></header>
-<table id="tbl" hidden><thead><tr><th scope="col">User</th><th scope="col">Reset</th><th scope="col" style="text-align:right">Time left</th></tr></thead><tbody id="tb"></tbody></table>
+<div class="scroll"><table id="tbl" hidden><thead id="th"></thead><tbody id="tb"></tbody></table></div>
 <p id="empty" hidden>No timers armed — run <code>$tu</code> in Discord and this fills in.</p>
 <footer>refreshes every 10s</footer>
 </main>
@@ -241,21 +259,46 @@ function fmt(ms) {
   const m = Math.ceil(ms / 60000);
   return (m >= 60 ? Math.floor(m / 60) + 'h ' : '') + (m % 60) + 'm';
 }
+// Preferred column order; any reset type not listed is appended so nothing is dropped.
+const ORDER = ['rolls', 'claim', 'daily', 'dk', 'kakera', 'vote'];
 function draw() {
+  const tbl = document.getElementById('tbl');
+  tbl.hidden = data.length === 0;
+  document.getElementById('empty').hidden = data.length > 0;
+  if (!data.length) return;
+
+  // columns = only reset types actually present, in preferred order
+  const present = new Set(data.map(r => r.key));
+  const keys = [...ORDER.filter(k => present.has(k)), ...[...present].filter(k => !ORDER.includes(k))];
+
+  // pivot: user -> {key -> at}, and track each user's soonest timer for sorting
+  const users = new Map();
+  for (const r of data) {
+    let u = users.get(r.name);
+    if (!u) users.set(r.name, u = { cells: {}, min: Infinity });
+    u.cells[r.key] = r.at;
+    u.min = Math.min(u.min, r.at);
+  }
+
+  const th = document.getElementById('th');
+  th.innerHTML = '';
+  const hr = th.insertRow();
+  hr.insertCell().outerHTML = '<th scope="col">User</th>';
+  for (const k of keys) { const c = hr.insertCell(); c.outerHTML = '<th scope="col">' + k + '</th>'; }
+
   const tb = document.getElementById('tb');
   tb.innerHTML = '';
-  document.getElementById('tbl').hidden = data.length === 0;
-  document.getElementById('empty').hidden = data.length > 0;
-  for (const r of data.slice().sort((a, b) => a.at - b.at)) {
-    const left = r.at - Date.now();
+  const now = Date.now();
+  for (const [name, u] of [...users].sort((a, b) => a[1].min - b[1].min)) {
     const tr = tb.insertRow();
-    tr.className = left <= 0 ? 'ready' : '';
-    tr.insertCell().textContent = r.name;
-    const badge = document.createElement('span');
-    badge.className = 'badge'; badge.textContent = r.key;
-    tr.insertCell().appendChild(badge);
-    const c = tr.insertCell();
-    c.className = 'left'; c.textContent = fmt(left);
+    const nc = tr.insertCell(); nc.className = 'u'; nc.textContent = name;
+    for (const k of keys) {
+      const c = tr.insertCell(); c.className = 't';
+      if (!(k in u.cells)) { c.classList.add('none'); c.textContent = '—'; continue; }
+      const left = u.cells[k] - now;
+      if (left <= 0) c.classList.add('ready');
+      c.textContent = fmt(left);
+    }
   }
 }
 async function poll() {
