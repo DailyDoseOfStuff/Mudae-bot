@@ -19,13 +19,16 @@ const GH_HEADERS = {
 
 // Which lines to watch. key = label, re = regex matching that $tu line.
 // Patterns run on markdown-stripped text (Mudae bolds the times: "**1h 39** min").
+// `[^.]*?` between the keyword and the duration is period-scoped (. never matches
+// a newline here), so each pattern stays on its own $tu line while tolerating the
+// wording variants Mudae uses ("for another" / "reset in" / "back in" / "in").
 const WATCH = [
-  { key: 'claim',  re: /claim for another ([\dhmins ]+?)\./i },
-  { key: 'rolls',  re: /rolls reset in ([\dhmins ]+?)\./i },
-  { key: 'daily',  re: /\$daily reset in ([\dhmins ]+?)\./i },
-  { key: 'kakera', re: /react to kakera for another ([\dhmins ]+?)\./i },
-  { key: 'dk',     re: /\$dk (?:in|ready in) ([\dhmins ]+?)\./i },
-  { key: 'vote',   re: /vote again in ([\dhmins ]+?)\./i },
+  { key: 'claim',  re: /claim[^.]*?(?:for another|reset(?: is)? in) ([\dhmins ]+?)\./i },
+  { key: 'rolls',  re: /rolls?[^.]*?(?:reset|back)(?: in)? ([\dhmins ]+?)\./i },
+  { key: 'daily',  re: /\$?daily[^.]*?(?:for another|reset in|back in|in) ([\dhmins ]+?)\./i },
+  { key: 'kakera', re: /kakera[^.]*?(?:for another|reset in|back in|in) ([\dhmins ]+?)\./i },
+  { key: 'dk',     re: /\$?dk[^.]*?(?:for another|ready in|reset in|in) ([\dhmins ]+?)\./i },
+  { key: 'vote',   re: /vote[^.]*?(?:again in|for another|reset in|in) ([\dhmins ]+?)\./i },
 ];
 
 // Strip Discord bold/italic so "**1h 39** min" reads as "1h 39 min" and the

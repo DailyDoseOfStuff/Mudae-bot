@@ -20,6 +20,30 @@ assert.deepStrictEqual(tu.map(r => r.key).sort(), ['claim', 'rolls'], 'tu must y
 assert.strictEqual(tu.find(r => r.key === 'claim').ms, 99 * 60_000, 'claim = 99 min');
 assert.strictEqual(tu.find(r => r.key === 'rolls').ms, 39 * 60_000, 'rolls = 39 min');
 
+// All six reset types, wording variants the broadened patterns must catch.
+// NOTE: daily/kakera/dk/vote wordings here are plausible, not log-verified —
+// paste a real $tu to lock them. Available ("right now") lines must NOT arm.
+const FULL =
+  "**user**, you can't claim for another **2h** min.\n" +
+  'Your **rolls** reset in **12** min.\n' +
+  'Next **$daily** reset in **20h 5** min.\n' +
+  "You can't react to **kakera** for another **1h 3** min.\n" +
+  'Your **$dk** is ready in **4h** min.\n' +
+  'You may **vote** again in **6h 30** min.';
+const full = matchResets(stripMd(FULL)).map(r => r.key).sort();
+assert.deepStrictEqual(full, ['claim', 'daily', 'dk', 'kakera', 'rolls', 'vote'], 'all six arm');
+
+// "available now" lines carry no duration -> must arm nothing.
+const AVAIL = 'You can claim right now! $daily is available! You may vote now!';
+assert.deepStrictEqual(matchResets(stripMd(AVAIL)), [], 'available lines arm nothing');
+
+// Alternate wordings ("back in" / "reset in") the connectors must also catch.
+const ALT =
+  'Your **$daily** is back in **3h** min.\n' +
+  'Next **kakera** reset in **45** min.';
+const alt = matchResets(stripMd(ALT)).map(r => r.key).sort();
+assert.deepStrictEqual(alt, ['daily', 'kakera'], 'alt wordings arm daily+kakera');
+
 // --- handler ordering (the bug) ----------------------------------------
 // A no-timer Mudae message must NOT consume the pending $tu requester;
 // the real $tu reply that follows must still be attributed and armed.
